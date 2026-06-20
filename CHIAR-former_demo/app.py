@@ -22,8 +22,8 @@ st.set_page_config(
 )
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-HF_REPO_ID  = "prateeksikdar/CHIAR-Former"
-HF_FILENAME = "chiar_dct_attn_400M_best.pt"
+HF_REPO_ID  = "prateeksikdar/CHIAR-former"
+HF_FILENAME = "checkpoints/chiar_dct_attn_400M_best.pt"
 CKPT_PATH   = os.path.join("checkpoints", HF_FILENAME)
 
 # ── Styles ────────────────────────────────────────────────────────────────────
