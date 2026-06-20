@@ -551,13 +551,14 @@ if run_btn and user_text.strip():
     loading_ph  = st.empty()
     result_holder = {}
 
+    # Capture from session_state in the main thread.
+    # session_state cannot be accessed from inside a background thread.
+    _model     = st.session_state["model"]
+    _tokenizer = st.session_state["tokenizer"]
+
     def run_inference():
         try:
-            result_holder["out"] = get_routing(
-                st.session_state["model"],
-                st.session_state["tokenizer"],
-                user_text,
-            )
+            result_holder["out"] = get_routing(_model, _tokenizer, user_text)
         except Exception:
             result_holder["error"] = traceback.format_exc()
 
