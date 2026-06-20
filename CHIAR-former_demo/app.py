@@ -1,20 +1,14 @@
 # app.py — CHIAR-Former Live Routing Demo
 # Streamlit app for HuggingFace Spaces
 #
-# Automatically downloads the checkpoint from HuggingFace Hub on first run.
-# Falls back to heuristic routing if download fails or no GPU is available.
+# Auto-downloads checkpoint from HuggingFace Hub on first run.
+# If the model fails to load or inference fails, a hard error is shown.
+# There is NO heuristic fallback — results are always from the real model.
 #
-# Usage (local):
-#   streamlit run app.py
-#
-# Deployment:
-#   Push to HuggingFace Spaces (SDK: Streamlit)
-#   Checkpoint is auto-downloaded from prateeksikdar/CHIAR-Former on first run.
-#
-# Install:
-#   pip install streamlit torch transformers huggingface_hub
+# Usage (local):   streamlit run app.py
+# Deployment:      push to HuggingFace Spaces (SDK: Streamlit)
 
-import os, sys, time, math, threading
+import os, sys, time, threading, traceback
 import streamlit as st
 import torch
 
@@ -28,19 +22,9 @@ st.set_page_config(
 )
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-HF_REPO_ID   = "prateeksikdar/CHIAR-Former"
-HF_FILENAME  = "chiar_dct_attn_400M_best.pt"
-CKPT_PATH    = os.path.join("checkpoints", HF_FILENAME)
-
-FUNCTION_WORDS = {
-    "the","a","an","of","in","to","and","or","but","is","was","are","were",
-    "it","its","that","this","for","on","at","by","with","from","as","be",
-    "been","have","has","had","do","did","not","no","so","if","then","than",
-    "into","their","they","we","you","he","she","which","who","also","just",
-    "very","more","most","some","all","each","both","few","many","such",
-    "about","after","before","between","during","while","though","although",
-    "because","since","when","where","how","what","there","here","these","those",
-}
+HF_REPO_ID  = "prateeksikdar/CHIAR-Former"
+HF_FILENAME = "chiar_dct_attn_400M_best.pt"
+CKPT_PATH   = os.path.join("checkpoints", HF_FILENAME)
 
 # ── Styles ────────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -50,43 +34,26 @@ st.markdown("""
   .title-box {
     background: linear-gradient(135deg, #1A4E8C, #0D1B2A);
     border-left: 5px solid #F39C12;
-    padding: 24px 28px;
-    border-radius: 8px;
-    margin-bottom: 24px;
+    padding: 24px 28px; border-radius: 8px; margin-bottom: 24px;
   }
   .title-box h1 { color: #F39C12; font-size: 2.2rem; margin:0; }
   .title-box p  { color: #AABBCC; font-size: 1.0rem; margin-top:8px; }
   .chiaroscuro-box {
-    background: #111E2E;
-    border: 1px solid #2E4A6A;
-    border-left: 4px solid #8E44AD;
-    padding: 16px 20px;
-    border-radius: 6px;
-    margin-bottom: 20px;
-    font-size: 0.92rem;
-    color: #C8D8E8;
-    line-height: 1.7;
+    background: #111E2E; border: 1px solid #2E4A6A;
+    border-left: 4px solid #8E44AD; padding: 16px 20px;
+    border-radius: 6px; margin-bottom: 20px;
+    font-size: 0.92rem; color: #C8D8E8; line-height: 1.7;
   }
   .stat-card {
-    background: #111E2E;
-    border: 1px solid #2E4A6A;
-    border-radius: 8px;
-    padding: 16px;
-    text-align: center;
-    margin: 4px;
+    background: #111E2E; border: 1px solid #2E4A6A;
+    border-radius: 8px; padding: 16px; text-align: center; margin: 4px;
   }
   .stat-val { font-size: 1.8rem; font-weight: bold; color: #F39C12; }
   .stat-lbl { font-size: 0.8rem; color: #7A9AB5; margin-top: 4px; }
   .token-box {
-    display: inline-block;
-    padding: 5px 9px;
-    margin: 3px 2px;
-    border-radius: 5px;
-    font-size: 0.95rem;
-    font-weight: 600;
-    font-family: monospace;
-    color: white;
-    vertical-align: middle;
+    display: inline-block; padding: 5px 9px; margin: 3px 2px;
+    border-radius: 5px; font-size: 0.95rem; font-weight: 600;
+    font-family: monospace; color: white; vertical-align: middle;
   }
   .dct-token  { background-color: #1A5276; border: 1px solid #2E86C1; }
   .attn-token { background-color: #7B241C; border: 1px solid #C0392B; }
@@ -94,45 +61,41 @@ st.markdown("""
                   border-radius:4px; font-size:0.85rem; }
   .legend-attn { background:#7B241C; color:white; padding:4px 12px;
                   border-radius:4px; font-size:0.85rem; }
-  .loading-line {
-    font-size: 1.05rem;
-    color: #85C1E9;
-    padding: 6px 0;
-    line-height: 1.8;
-  }
-  .result-header {
-    font-size: 1.2rem;
-    font-weight: bold;
-    color: #F39C12;
-    margin-bottom: 12px;
-  }
+  .loading-line { font-size:1.05rem; color:#85C1E9; padding:6px 0; line-height:1.8; }
+  .result-header { font-size:1.2rem; font-weight:bold; color:#F39C12; margin-bottom:12px; }
   .contribution-box {
-    background: #0A1520;
-    border: 1px solid #1A3A55;
-    border-radius: 6px;
-    padding: 14px 18px;
-    margin: 6px 0;
-    font-size: 0.9rem;
-    color: #B0C8E0;
+    background: #0A1520; border: 1px solid #1A3A55; border-radius: 6px;
+    padding: 14px 18px; margin: 6px 0; font-size: 0.9rem; color: #B0C8E0;
   }
-  .status-pill {
-    display: inline-block;
-    padding: 3px 10px;
-    border-radius: 12px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    margin-left: 8px;
+  .status-loaded {
+    background:#1E4D2B; color:#58D68D; border:1px solid #27AE60;
+    padding:6px 12px; border-radius:6px; font-size:0.85rem;
+    display:block; margin-bottom:4px;
   }
-  .status-loaded  { background:#1E4D2B; color:#58D68D; border:1px solid #27AE60; }
-  .status-demo    { background:#4A2000; color:#F0A500; border:1px solid #E67E22; }
-  .status-loading { background:#1A2E4A; color:#85C1E9; border:1px solid #2E86C1; }
-  .link-row a {
-    color: #85C1E9;
-    text-decoration: none;
-    margin-right: 16px;
-    font-size: 0.88rem;
+  .status-failed {
+    background:#2D0A0A; color:#F1948A; border:1px solid #7B1C1C;
+    padding:6px 12px; border-radius:6px; font-size:0.85rem;
+    display:block; margin-bottom:4px;
   }
-  .link-row a:hover { text-decoration: underline; }
+  .status-loading {
+    background:#1A2E4A; color:#85C1E9; border:1px solid #2E86C1;
+    padding:6px 12px; border-radius:6px; font-size:0.85rem;
+    display:block; margin-bottom:4px;
+  }
+  .error-box {
+    background:#2D0A0A; border:1px solid #7B1C1C; border-radius:8px;
+    padding:20px 24px; margin-top:16px;
+  }
+  .error-box h3 { color:#F1948A; margin:0 0 8px 0; font-size:1.1rem; }
+  .error-step { color:#E59866; font-size:0.9rem; margin-bottom:6px; font-weight:600; }
+  .error-trace {
+    background:#1A0505; border:1px solid #5B1010; border-radius:4px;
+    padding:12px; font-size:0.78rem; color:#F1948A;
+    font-family:monospace; white-space:pre-wrap; word-break:break-all;
+    max-height:300px; overflow-y:auto; margin-top:6px;
+  }
+  .link-row a { color:#85C1E9; text-decoration:none; margin-right:16px; font-size:0.88rem; }
+  .link-row a:hover { text-decoration:underline; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -156,96 +119,148 @@ st.markdown("""
   <b style="color:#C39BD3;font-size:1.05rem;">🖼️ The Chiaroscuro Inspiration</b><br><br>
   In Renaissance painting, <i>chiaroscuro</i> (Italian: <i>chiaro</i> = light,
   <i>scuro</i> = dark) is the technique of using extreme contrasts of light and shadow
-  to model three-dimensional form. Masters like <b>Caravaggio</b>, <b>Leonardo da Vinci</b>,
-  and <b>Rembrandt</b> did not illuminate a canvas uniformly — they poured light exactly
+  to model form. Masters like <b>Caravaggio</b>, <b>Leonardo da Vinci</b>, and
+  <b>Rembrandt</b> did not illuminate a canvas uniformly — they poured light exactly
   where the eye needed detail, leaving peripheral regions in inexpensive shadow.<br><br>
-  <b>CHIAR-Former borrows this principle for computation.</b> Not every token in a
-  sentence deserves the same attention budget. Function words — <i>the</i>, <i>of</i>,
-  <i>and</i> — are the shadowed periphery: smooth, low-frequency, cheap to process
-  with DCT spectral mixing in <span style="color:#85C1E9;">O(d log d)</span>.
+  <b>CHIAR-Former borrows this principle for computation.</b> Function words —
+  <i>the</i>, <i>of</i>, <i>and</i> — are the shadowed periphery: smooth,
+  low-frequency, cheap to process with DCT spectral mixing in
+  <span style="color:#85C1E9;">O(d log d)</span>.
   Content words — <i>overwhelming</i>, <i>consensus</i>, <i>paradox</i> — are the
   illuminated focal points: rich, high-entropy, deserving full self-attention in
   <span style="color:#F1948A;">O(n²d)</span>.<br><br>
   The model measures this via <b>spectral entropy</b> H(x) — the information entropy
   of each token's DCT power spectrum. Low entropy = smooth = DCT (blue).
-  High entropy = complex = Attention (red). The result: a painting-like allocation
-  of compute, spending light where the signal is dark.
+  High entropy = complex = Attention (red).
 </div>
 """, unsafe_allow_html=True)
 
 
-# ── Checkpoint download ───────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# MODEL LOADING
+# session_state["model_status"]:
+#   "pending" — not attempted yet
+#   "loaded"  — model ready
+#   "failed"  — load failed; session_state["model_error"] has the details
+# ══════════════════════════════════════════════════════════════════════════════
 
-def download_checkpoint():
+if "model_status" not in st.session_state:
+    st.session_state["model_status"] = "pending"
+    st.session_state["model_error"]  = {"step": "", "trace": ""}
+    st.session_state["model"]        = None
+    st.session_state["tokenizer"]    = None
+    st.session_state["val_ppl"]      = None
+
+
+def attempt_load():
     """
-    Download checkpoint from HuggingFace Hub if not already present.
-    Returns (success: bool, message: str).
+    Load CHIAR-Former into session_state.
+    Six discrete steps — each fails loudly with its step name and full traceback.
+    No fallback, no heuristic, no silent catch.
+    Called once per session; subsequent calls are no-ops.
     """
-    if os.path.exists(CKPT_PATH):
-        return True, "checkpoint already present"
+    if st.session_state["model_status"] != "pending":
+        return
+
+    def fail(step, tb):
+        st.session_state["model_status"] = "failed"
+        st.session_state["model_error"]  = {"step": step, "trace": tb}
+
+    # Step 1 — tokenizer
     try:
-        from huggingface_hub import hf_hub_download
-        os.makedirs("checkpoints", exist_ok=True)
-        hf_hub_download(
-            repo_id=HF_REPO_ID,
-            filename=HF_FILENAME,
-            local_dir="./checkpoints",
-        )
-        return True, "downloaded successfully"
-    except ImportError:
-        return False, "huggingface_hub not installed"
-    except Exception as e:
-        return False, str(e)
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained("gpt2")
+        tok.pad_token = tok.eos_token
+        st.session_state["tokenizer"] = tok
+    except Exception:
+        fail("Step 1 — Load GPT-2 tokenizer", traceback.format_exc())
+        return
 
-
-# ── Model loading ─────────────────────────────────────────────────────────────
-
-@st.cache_resource(show_spinner=False)
-def load_model():
-    """
-    Load CHIAR-Former from checkpoint.
-    Auto-downloads from HuggingFace Hub if checkpoint is missing.
-    Returns (model, tokenizer, mode) where mode is 'loaded' or 'demo'.
-    """
-    from transformers import AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    tokenizer.pad_token = tokenizer.eos_token
-
-    # Try to download if missing
+    # Step 2 — download checkpoint
     if not os.path.exists(CKPT_PATH):
-        success, msg = download_checkpoint()
-        if not success:
-            # Could not download — run in demo mode
-            return None, tokenizer, f"demo:{msg}"
+        try:
+            from huggingface_hub import hf_hub_download
+            os.makedirs("checkpoints", exist_ok=True)
+            hf_hub_download(
+                repo_id=HF_REPO_ID,
+                filename=HF_FILENAME,
+                local_dir="./checkpoints",
+            )
+        except ImportError:
+            fail(
+                "Step 2 — Download checkpoint",
+                "huggingface_hub is not installed.\n"
+                "Fix: pip install huggingface_hub"
+            )
+            return
+        except Exception:
+            fail("Step 2 — Download checkpoint from HuggingFace Hub", traceback.format_exc())
+            return
 
-    # Load model
+    # Step 3 — torch.load
+    try:
+        ckpt = torch.load(CKPT_PATH, map_location="cpu")
+    except Exception:
+        fail(f"Step 3 — torch.load('{CKPT_PATH}')", traceback.format_exc())
+        return
+
+    # Step 4 — build config
     try:
         from config import Config
-        from model import CHIARFormer
-
-        ckpt = torch.load(CKPT_PATH, map_location="cpu")
-        cfg  = Config()
-        cfg.vocab_size = len(tokenizer)
-
-        # Restore config from checkpoint if available
-        saved_cfg = ckpt.get("cfg", {})
-        for k, v in saved_cfg.items():
+        cfg = Config()
+        cfg.vocab_size = len(tok)
+        for k, v in ckpt.get("cfg", {}).items():
             if hasattr(cfg, k):
                 setattr(cfg, k, v)
+    except Exception:
+        fail("Step 4 — Build model Config", traceback.format_exc())
+        return
 
+    # Step 5 — instantiate model
+    try:
+        from model import CHIARFormer
         model = CHIARFormer(cfg)
+    except Exception:
+        fail("Step 5 — CHIARFormer.__init__(cfg)", traceback.format_exc())
+        return
+
+    # Step 6 — load weights
+    try:
         model.load_state_dict(ckpt["model"])
         model.eval()
+    except Exception:
+        fail("Step 6 — model.load_state_dict(checkpoint)", traceback.format_exc())
+        return
 
-        val_ppl = ckpt.get("val_ppl", None)
-        return model, tokenizer, f"loaded:{val_ppl:.2f}" if val_ppl else "loaded"
+    # All steps passed
+    st.session_state["model"]        = model
+    st.session_state["val_ppl"]      = ckpt.get("val_ppl", None)
+    st.session_state["model_status"] = "loaded"
 
-    except Exception as e:
-        return None, tokenizer, f"demo:load error — {e}"
+
+def show_load_error():
+    """Render a hard, detailed error block. No routing result is shown."""
+    err  = st.session_state["model_error"]
+    step = err.get("step", "unknown step")
+    tb   = err.get("trace", "no traceback available")
+    st.markdown(f"""
+    <div class="error-box">
+      <h3>🚫 Model failed to load — no routing results available</h3>
+      <div class="error-step">Failed at: {step}</div>
+      <div class="error-trace">{tb}</div>
+      <br>
+      <span style="color:#A04040;font-size:0.85rem;">
+        Fix the error above and restart the app.
+        Check that the checkpoint at <code>{CKPT_PATH}</code> matches the model
+        architecture in <code>config.py</code> and that all dependencies
+        (torch, transformers, huggingface_hub) are installed correctly.
+      </span>
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
 
 
-# ── Loading messages (typewriter effect) ──────────────────────────────────────
+# ── Loading messages ──────────────────────────────────────────────────────────
 
 LOADING_LINES = [
     ("⚡", "CHIAR-Former saves ~37% total FLOPs vs full attention on this input..."),
@@ -259,15 +274,13 @@ LOADING_LINES = [
 
 
 def typewriter_loading(placeholder):
-    """Display loading facts one by one while the model runs."""
     lines_shown = []
     for icon, text in LOADING_LINES:
         lines_shown.append(f'<div class="loading-line">{icon} &nbsp; {text}</div>')
         placeholder.markdown(
             '<div style="background:#0A1520;border:1px solid #1A3A55;'
             'border-radius:8px;padding:16px 20px;">'
-            + "".join(lines_shown)
-            + "</div>",
+            + "".join(lines_shown) + "</div>",
             unsafe_allow_html=True,
         )
         time.sleep(1.2)
@@ -277,50 +290,38 @@ def typewriter_loading(placeholder):
 
 @torch.no_grad()
 def get_routing(model, tokenizer, text):
-    """Run a forward pass and return per-token routing decisions."""
+    """Run forward pass and return per-token routing decisions from the model."""
     ids = tokenizer.encode(text, return_tensors="pt")
-    ids = ids[:, :256]  # cap at training seq_len
+    ids = ids[:, :256]
 
     logits, infos, _, meta_gate = model(ids, return_routing_info=True)
 
-    # L2 (index 1) is the first routing layer
     info   = infos[1] if len(infos) > 1 else infos[0]
     op_idx = info.get("op_idx")   # (1, T) — 0=DCT, 1=Attention
-    H      = info.get("H")        # (1, T) — spectral entropy
+    H      = info.get("H")        # (1, T) — spectral entropy per token
 
     tokens = [tokenizer.decode([t]) for t in ids[0].tolist()]
 
-    if op_idx is not None:
-        ops      = op_idx[0].tolist()
-        entropy  = H[0].tolist() if H is not None else [None] * len(tokens)
-    else:
-        ops     = [0 if tok.strip().lower().rstrip(".,;:'\"") in FUNCTION_WORDS
-                   else 1 for tok in tokens]
-        entropy = [None] * len(tokens)
+    if op_idx is None:
+        raise RuntimeError(
+            "Model did not return op_idx in routing_info. "
+            "Ensure return_routing_info=True is handled in CHIARFormer.forward()."
+        )
 
-    gate = meta_gate.item() if meta_gate is not None else None
+    ops     = op_idx[0].tolist()
+    entropy = H[0].tolist() if H is not None else [None] * len(tokens)
+    gate    = meta_gate.item() if meta_gate is not None else None
     return tokens, ops, entropy, gate
-
-
-def heuristic_routing(tokenizer, text):
-    """Heuristic fallback for demo mode — uses function word list."""
-    ids     = tokenizer.encode(text)
-    tokens  = [tokenizer.decode([t]) for t in ids[:256]]
-    ops     = [0 if tok.strip().lower().rstrip(".,;:'\"") in FUNCTION_WORDS
-               else 1 for tok in tokens]
-    entropy = [None] * len(tokens)
-    return tokens, ops, entropy, None
 
 
 # ── Render heatmap ────────────────────────────────────────────────────────────
 
-def render_heatmap(tokens, ops, entropy, meta_gate, mode):
+def render_heatmap(tokens, ops, entropy, meta_gate):
     n_dct   = ops.count(0)
     n_attn  = ops.count(1)
     total   = len(ops)
-    pct_dct = 100 * n_dct  / total if total else 0
+    pct_dct = 100 * n_dct / total if total else 0
 
-    # Stats row
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown(f"""<div class="stat-card">
@@ -341,20 +342,16 @@ def render_heatmap(tokens, ops, entropy, meta_gate, mode):
           <div class="stat-lbl">MetaRouter gate g</div></div>""", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
-
-    # Legend
     st.markdown("""
     <span class="legend-dct">🔵 DCT Mixing — O(d log d)</span> &nbsp;&nbsp;
     <span class="legend-attn">🔴 Full Attention — O(n²d)</span>
     """, unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Token heatmap
     html_tokens = []
     for tok, op, h in zip(tokens, ops, entropy):
         display = tok.replace(" ", "&nbsp;").replace("<", "&lt;").replace(">", "&gt;")
         cls     = "dct-token" if op == 0 else "attn-token"
-        # Show entropy on hover via title attribute
         title   = f"H={h:.3f}" if h is not None else ""
         html_tokens.append(
             f'<span class="token-box {cls}" title="{title}">{display}</span>'
@@ -363,12 +360,10 @@ def render_heatmap(tokens, ops, entropy, meta_gate, mode):
     st.markdown(
         '<div style="line-height:2.4;padding:16px;background:#0A1520;'
         'border:1px solid #1A3A55;border-radius:8px;">'
-        + "".join(html_tokens)
-        + "</div>",
+        + "".join(html_tokens) + "</div>",
         unsafe_allow_html=True,
     )
 
-    # Hover tip
     if any(h is not None for h in entropy):
         st.markdown(
             '<span style="font-size:0.78rem;color:#4A6A8A;">'
@@ -376,43 +371,53 @@ def render_heatmap(tokens, ops, entropy, meta_gate, mode):
             unsafe_allow_html=True,
         )
 
-    # Routing insight box
-    st.markdown("<br>", unsafe_allow_html=True)
-    gate_line = (
-        f"MetaRouter gate g = <b>{meta_gate:.3f}</b> — "
-        + ("naturalistic text regime (DCT preprocessing active)."
-           if meta_gate is not None and meta_gate > 0.5
-           else "symbolic/structured input regime (DCT largely bypassed).")
-        if meta_gate is not None
-        else ""
-    )
+    gate_line = ""
+    if meta_gate is not None:
+        regime = ("naturalistic text regime — DCT preprocessing active."
+                  if meta_gate > 0.5
+                  else "symbolic/structured input regime — DCT largely bypassed.")
+        gate_line = f"MetaRouter gate g = <b>{meta_gate:.3f}</b> — {regime}<br>"
+
     st.markdown(f"""
-    <div class="chiaroscuro-box" style="margin-top:4px;">
+    <div class="chiaroscuro-box" style="margin-top:12px;">
       <b style="color:#F39C12;">Routing insight for this input:</b><br>
-      {n_dct} of {total} tokens ({100*n_dct//total if total else 0}%) routed to
-      <span style="color:#85C1E9;"><b>DCT Mixing</b></span> —
-      processed in O(d log d), cheap spectral filtering.<br>
-      {n_attn} of {total} tokens ({100*n_attn//total if total else 0}%) routed to
-      <span style="color:#F1948A;"><b>Full Attention</b></span> —
-      full O(n²d) contextual computation.<br>
-      {gate_line}<br><br>
-      This is the chiaroscuro principle in action: the model illuminates
-      only what needs illumination, leaving smooth tokens in inexpensive shadow.
+      {n_dct} of {total} tokens ({100*n_dct//total if total else 0}%) →
+      <span style="color:#85C1E9;"><b>DCT Mixing</b></span> O(d log d).<br>
+      {n_attn} of {total} tokens ({100*n_attn//total if total else 0}%) →
+      <span style="color:#F1948A;"><b>Full Attention</b></span> O(n²d).<br>
+      {gate_line}<br>
+      This is the chiaroscuro principle: illuminate only where the signal demands it.
     </div>
     """, unsafe_allow_html=True)
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# SIDEBAR
+# ══════════════════════════════════════════════════════════════════════════════
 
 with st.sidebar:
-
-    # Model status — shown before load so user knows what's happening
     st.markdown("### ⚙️ Model Status")
-    status_ph = st.empty()
-    status_ph.markdown(
-        '<span class="status-pill status-loading">⏳ not loaded yet</span>',
-        unsafe_allow_html=True,
-    )
+
+    status = st.session_state["model_status"]
+
+    if status == "pending":
+        st.markdown(
+            '<span class="status-loading">⏳ Not loaded — click Route Tokens</span>',
+            unsafe_allow_html=True,
+        )
+    elif status == "loaded":
+        ppl     = st.session_state["val_ppl"]
+        ppl_str = f" · Val PPL {ppl:.2f}" if ppl else ""
+        st.markdown(
+            f'<span class="status-loaded">✅ Model loaded{ppl_str}</span>',
+            unsafe_allow_html=True,
+        )
+    elif status == "failed":
+        step = st.session_state["model_error"].get("step", "")
+        st.markdown(
+            f'<span class="status-failed">🚫 Load failed — {step}</span>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("---")
     st.markdown("### 🔬 Key Contributions")
@@ -432,7 +437,7 @@ with st.sidebar:
          "layers → ~37% total reduction at 400M scale."),
         ("🌊 Chiaroscuro Principle",
          "Spend compute where the signal is dark (high entropy). "
-         "Light tokens (smooth) → DCT. Dark tokens (complex) → Attention."),
+         "Light tokens → DCT. Dark tokens → Attention."),
         ("📊 Scale Experiments",
          "16M ablations + 400M scaling study + mixed multi-task MetaRouter training."),
     ]
@@ -467,7 +472,9 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
 
-# ── Main input ────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN INPUT
+# ══════════════════════════════════════════════════════════════════════════════
 
 st.markdown("### ✍️ Enter any text to see live routing")
 st.markdown(
@@ -476,7 +483,7 @@ st.markdown(
     'based on spectral entropy. '
     '<b style="color:#2E86C1;">Blue = DCT (cheap)</b>. '
     '<b style="color:#C0392B;">Red = Attention (expensive)</b>. '
-    'Hover over a token to see its entropy value.'
+    'Hover a token to see its entropy H(x).'
     '</span>',
     unsafe_allow_html=True,
 )
@@ -487,7 +494,6 @@ default_texts = [
     "The old lighthouse keeper had maintained the lamp for forty years through storms that shook the foundations and winters that froze the bay solid.",
     "If MAX(3, MIN(7, 4), 2) equals X and MIN(X, 5) equals Y then Y is the answer.",
 ]
-
 EXAMPLE_LABELS = [
     "Example 1 — Climate policy (mixed routing)",
     "Example 2 — Transformer architecture (technical)",
@@ -512,58 +518,48 @@ with col_example:
         label_visibility="collapsed",
     )
     if example != "— pick an example —":
-        idx       = EXAMPLE_LABELS.index(example)
-        user_text = default_texts[idx]
+        user_text = default_texts[EXAMPLE_LABELS.index(example)]
 
 run_btn = st.button("🎨 Route Tokens", type="primary", use_container_width=True)
 
 
-# ── Run ───────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# RUN
+# ══════════════════════════════════════════════════════════════════════════════
 
 if run_btn and user_text.strip():
 
     st.markdown("---")
+
+    # ── Load model once per session ───────────────────────────────────────────
+    if st.session_state["model_status"] == "pending":
+        with st.spinner("Loading CHIAR-Former (downloading checkpoint on first run)..."):
+            attempt_load()
+        st.rerun()  # rerun so sidebar status updates before we proceed
+
+    # ── Hard stop if load failed ──────────────────────────────────────────────
+    if st.session_state["model_status"] == "failed":
+        show_load_error()   # renders error block then calls st.stop()
+
+    # ── At this point model is confirmed loaded ───────────────────────────────
+    st.success("✅ Running real model routing — spectral entropy H(x) from trained CHIAR-Former.")
+
     st.markdown(
         '<div class="result-header">⏳ Routing in progress...</div>',
         unsafe_allow_html=True,
     )
-
-    loading_ph = st.empty()
-
-    # Load model (cached — only downloads/loads once per session)
-    with st.spinner("Loading CHIAR-Former... (first run: downloading checkpoint from HuggingFace Hub)"):
-        model, tokenizer, mode = load_model()
-
-    # Update sidebar status pill now that we know load result
-    if mode.startswith("loaded"):
-        val_ppl_str = mode.split(":")[1] if ":" in mode else ""
-        label = f"✅ model loaded" + (f" · Val PPL {val_ppl_str}" if val_ppl_str else "")
-        status_ph.markdown(
-            f'<span class="status-pill status-loaded">{label}</span>',
-            unsafe_allow_html=True,
-        )
-    else:
-        reason = mode.split(":", 1)[1] if ":" in mode else "checkpoint not found"
-        status_ph.markdown(
-            f'<span class="status-pill status-demo">⚠️ demo mode</span>',
-            unsafe_allow_html=True,
-        )
-
-    # Run routing in a thread while showing typewriter loading messages
+    loading_ph  = st.empty()
     result_holder = {}
 
     def run_inference():
         try:
-            if mode.startswith("loaded"):
-                result_holder["tokens"], result_holder["ops"], \
-                result_holder["entropy"], result_holder["gate"] = \
-                    get_routing(model, tokenizer, user_text)
-            else:
-                result_holder["tokens"], result_holder["ops"], \
-                result_holder["entropy"], result_holder["gate"] = \
-                    heuristic_routing(tokenizer, user_text)
-        except Exception as e:
-            result_holder["error"] = str(e)
+            result_holder["out"] = get_routing(
+                st.session_state["model"],
+                st.session_state["tokenizer"],
+                user_text,
+            )
+        except Exception:
+            result_holder["error"] = traceback.format_exc()
 
     t = threading.Thread(target=run_inference)
     t.start()
@@ -571,33 +567,31 @@ if run_btn and user_text.strip():
     t.join()
     loading_ph.empty()
 
-    # ── Results ───────────────────────────────────────────────────────────────
+    # ── Hard stop if inference failed ─────────────────────────────────────────
     if "error" in result_holder:
-        st.error(f"Routing failed: {result_holder['error']}")
-    else:
-        tokens     = result_holder["tokens"]
-        ops        = result_holder["ops"]
-        entropy    = result_holder["entropy"]
-        meta_gate  = result_holder["gate"]
+        st.markdown(f"""
+        <div class="error-box">
+          <h3>🚫 Inference failed — no routing results available</h3>
+          <div class="error-step">Error during model forward pass:</div>
+          <div class="error-trace">{result_holder["error"]}</div>
+          <br>
+          <span style="color:#A04040;font-size:0.85rem;">
+            The model loaded successfully but threw an error during inference.
+            Check that the input text is valid and that CHIARFormer.forward()
+            supports the <code>return_routing_info=True</code> flag.
+          </span>
+        </div>
+        """, unsafe_allow_html=True)
+        st.stop()
 
-        st.markdown(
-            '<div class="result-header">🎨 Chiaroscuro Routing Heatmap</div>',
-            unsafe_allow_html=True,
-        )
+    # ── Show results ──────────────────────────────────────────────────────────
+    tokens, ops, entropy, gate = result_holder["out"]
 
-        # Show banner if running in demo mode
-        if not mode.startswith("loaded"):
-            reason = mode.split(":", 1)[1] if ":" in mode else "checkpoint not found"
-            st.info(
-                f"ℹ️ Running in **demo mode** ({reason}). "
-                "Routing is approximated using a function-word heuristic — "
-                "not the trained model. "
-                f"To see real routing, ensure `{CKPT_PATH}` is present or "
-                "that the HuggingFace Hub download succeeds.",
-                icon="ℹ️",
-            )
-
-        render_heatmap(tokens, ops, entropy, meta_gate, mode)
+    st.markdown(
+        '<div class="result-header">🎨 Chiaroscuro Routing Heatmap</div>',
+        unsafe_allow_html=True,
+    )
+    render_heatmap(tokens, ops, entropy, gate)
 
 elif run_btn:
     st.warning("Please enter some text first.")
@@ -608,11 +602,10 @@ st.markdown("""
 <div style="text-align:center;font-size:0.82rem;color:#4A6A8A;padding:8px;">
   <b style="color:#5A7A9A;">CHIAR-Former</b> · Chiaroscuro Attention: Spending Compute in the Dark<br>
   Prateek Kumar Sikdar · AI Architect · Accenture · Bengaluru · 2026<br>
-  <a href="https://arxiv.org/abs/2606.08327" target="_blank"
-     style="color:#4A7A9A;">arXiv:2606.08327</a> &nbsp;|&nbsp;
-  <a href="https://github.com/hackie123/CHIAR-former" target="_blank"
-     style="color:#4A7A9A;">GitHub</a> &nbsp;|&nbsp;
-  <a href="https://huggingface.co/prateeksikdar/CHIAR-Former" target="_blank"
-     style="color:#4A7A9A;">HuggingFace</a>
+  <a href="https://arxiv.org/abs/2606.08327" target="_blank" style="color:#4A7A9A;">arXiv:2606.08327</a>
+  &nbsp;|&nbsp;
+  <a href="https://github.com/hackie123/CHIAR-former" target="_blank" style="color:#4A7A9A;">GitHub</a>
+  &nbsp;|&nbsp;
+  <a href="https://huggingface.co/prateeksikdar/CHIAR-Former" target="_blank" style="color:#4A7A9A;">HuggingFace</a>
 </div>
 """, unsafe_allow_html=True)
