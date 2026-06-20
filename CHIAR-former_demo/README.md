@@ -25,7 +25,7 @@ chiar_demo/
 │   ├── __init__.py
 │   └── flop_counter.py
 └── checkpoints/
-    └── chiar_threshold_dct_attn_wikitext103_350M_best.pt  ← PLACE HERE
+    └── chiar_dct_attn_400M_best.pt ← PLACE HERE
 ```
 
 ## Setup
@@ -38,7 +38,7 @@ streamlit run app.py
 ## Notes
 
 - Checkpoint file must be named exactly:
-  `chiar_threshold_dct_attn_wikitext103_350M_best.pt`
+  `chiar_dct_attn_400M_best.pt`
 
 - If no checkpoint is found, the app runs in demo mode using
   heuristic function-word routing (still shows the UI correctly).
